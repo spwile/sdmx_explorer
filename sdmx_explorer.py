@@ -20,7 +20,7 @@ cleanly in any terminal, browser dev-tools, or IDE console.
 
 Key map summary
 ---------------
-  1  Help    2  Query    3  Results    4  DSD    5  Cache    6  Search
+  1  Help    2  Search    3  DSD    4  Query    5  Results    6  Cache
 
 Number keys 1-6 navigate between screens from anywhere.
 
@@ -199,7 +199,7 @@ class SDMXClient:
         if end_period:
             params["endPeriod"] = end_period
         if last_n  > 0:
-            params["lastNObservations"]= str(last_n)
+            params["lastNObservations"] = str(last_n)
         if first_n > 0:
             params["firstNObservations"] = str(first_n)
         url = f"{BASE_URL}/data/DF_{dataflow_id}/{key}"
@@ -213,10 +213,10 @@ class SDMXClient:
         vid = vector_id.lstrip("vV")
         params: Dict[str, str] = {}
         if start_period:
-            params["startPeriod"] = start_period
+            params["startPeriod"]= start_period
         if end_period:
             params["endPeriod"] = end_period
-        if last_n > 0:
+        if last_n > 0: 
             params["lastNObservations"] = str(last_n)
         url = f"{BASE_URL}/vector/v{vid}"
         if params:
@@ -434,7 +434,7 @@ class AppState:
         self.error:          str                 = ""
         self.loading:        bool                = False
         self.status_msg:     str                 = (
-            "Ready — 1 help  2 query  3 results  4 DSD  5 cache  6 search  |  q quit"
+            "Ready — 1 help  2 search  3 DSD  4 query  5 results  6 cache  |  q quit"
         )
 
         self.table_offset: int  = 0
@@ -583,11 +583,11 @@ def draw_scrollbar(win, top_y: int, height: int, x: int,
 # ──────────────────────────────────────────────────────────────────────────────
 _NAV_ITEMS = [
     ("1 Help",    "help"),
-    ("2 Query",   "query"),
-    ("3 Results", "results"),
-    ("4 DSD",     "dsd"),
-    ("5 Cache",   "cache"),
-    ("6 Search",  "search"),
+    ("2 Search",  "search"),
+    ("3 DSD",     "dsd"),
+    ("4 Query",   "query"),
+    ("5 Results", "results"),
+    ("6 Cache",   "cache"),
 ]
 
 
@@ -692,7 +692,7 @@ def draw_query(win) -> None:
             cp(C_DIM2))
     if act_y + 1 < h - 5:
         safe_addstr(win, act_y + 1, 4,
-            "g  fetch data   d  fetch DSD   3  results   q quit",
+            "g  fetch data   d  fetch DSD   5  results   q quit",
             cp(C_DIM2))
 
     # ── Labels checkbox ──────────────────────────────────────────────────────
@@ -712,7 +712,7 @@ def draw_query(win) -> None:
             if n_filtered:
                 sel_summary = f"  ({n_filtered} dim(s) filtered)"
         safe_addstr(win, cb_y + 2, 4,
-            f"✓ DSD loaded: {ndims} dimensions  (4 to select){sel_summary}",
+            f"✓ DSD loaded: {ndims} dimensions  (3 to select){sel_summary}",
             cp(C_SUCCESS))
 
     if STATE.loading:
@@ -767,12 +767,12 @@ def draw_results(win) -> None:
 
     if STATE.error and frame is None:
         safe_addstr(win, 3, 3, f"Error: {STATE.error}", cp(C_ERROR))
-        safe_addstr(win, 5, 3, "2  back to query", cp(C_MUTED))
+        safe_addstr(win, 5, 3, "4  back to query", cp(C_MUTED))
         return
 
     if frame is None:
         safe_addstr(win, h // 2, 4,
-                    "No data yet — press 2 then g to fetch",
+                    "No data yet — press 4 then g to fetch",
                     cp(C_MUTED))
         return
 
@@ -1041,7 +1041,7 @@ def draw_dsd(win) -> None:
 
     if STATE.dsd is None:
         safe_addstr(win, h // 2, 4,
-            "No DSD loaded.  Go to query form (2) and press d.",
+            "No DSD loaded.  Go to query form (4) and press d.",
             cp(C_MUTED))
         return
 
@@ -1184,13 +1184,13 @@ def draw_dsd(win) -> None:
     hline(win, h - 2, 0, w, cp(C_BORDER))
     if STATE.dsd_level == "dims":
         hints = ("↑↓ select dim   → / Enter  open codes   "
-                 "a reset All   2 apply & go to query")
+                 "a reset All   4 apply & go to query")
     else:
         if cur_is_attr:
-            hints = ("↑↓ navigate   ← / Esc  back   / filter   2 query")
+            hints = ("↑↓ navigate   ← / Esc  back   / filter   4 query")
         else:
             hints = ("↑↓ navigate   Space toggle   a reset All   "
-                     "← / Esc back   / filter   2 apply & query")
+                     "← / Esc back   / filter   4 apply & query")
     safe_addstr(win, h - 2, 2, hints, cp(C_MUTED))
 
 
@@ -1234,11 +1234,11 @@ HELP_TEXT = """\
 
 GLOBAL NAVIGATION  (number keys — active outside text-edit / filter mode)
   1              Help (this screen)
-  2              Query form
-  3              Results table
-  4              DSD browser  (after fetching a DSD)
-  5              Cache manager
-  6              Table search
+  2              Table search
+  3              DSD browser  (after fetching a DSD)
+  4              Query form
+  5              Results table
+  6              Cache manager
   q              Quit
 
 QUERY FORM
@@ -1284,23 +1284,22 @@ DSD BROWSER  (after fetching the DSD on the query form)
     Esc          Clear filter or return to left pane
     ←            Return to left pane
 
-  2 applies selections → dim key, then goes to query form
+  4 applies selections → dim key, then goes to query form
 
 CACHE MANAGER
   c              Clear all cached HTTP responses
 
 TABLE SEARCH
   Browse mode (default)
-    Enter          Enter editing mode (or select highlighted result)
-    e              Enter editing mode
+    Esc            Enter editing mode (focus the search box)
     ↑ / ↓          Navigate results  (also j / k)
     PgUp / PgDn    Jump 10 rows
-    Tab            Select highlighted result → query form
+    Enter          Select highlighted result → query form
     r              (Re)load the full table list  (cached 24 h)
   Editing mode  (search box active — 1-6 and r type as text)
     Type           Filter by table name or product ID
     Backspace      Erase last character
-    Enter / Esc    Exit editing mode
+    Enter / Esc    Confirm and return to browse mode
   Note: list auto-loads on first keystroke in editing mode
 
 ──────────────────────────────────────────────────────────────
@@ -1458,7 +1457,7 @@ def do_fetch_data() -> None:
         ndims = len(STATE.dsd.get("dimensions", [])) if STATE.dsd else "?"
         STATE.status_msg = (
             f"Loaded {len(frame)} rows · {len(frame.columns)} columns"
-            f" · {ndims} dimensions — 4 to explore DSD"
+            f" · {ndims} dimensions — 3 to explore DSD"
         )
         STATE.mode = "results"
     except Exception as e:
@@ -1489,7 +1488,7 @@ def do_fetch_dsd() -> None:
         nattrs    = len(STATE.dsd.get("attributes", []))
         STATE.status_msg = (
             f"DSD loaded: {ndims} dimensions, {nattrs} attributes"
-            " — 4 to explore"
+            " — 3 to explore"
         )
     except Exception as e:
         STATE.error      = str(e)
@@ -1771,7 +1770,7 @@ def draw_search(win) -> None:
 
     # ── Search box ────────────────────────────────────────────────────────────
     sq_label = "Search: "
-    editing_hint = " (editing — Esc to stop)" if STATE.search_editing else " (Enter to edit)"
+    editing_hint = " (editing — Esc to browse)" if STATE.search_editing else " (Esc to edit)"
     safe_addstr(win, 3, 4, sq_label, cp(C_LABEL, bold=True))
     box_w = w - 4 - len(sq_label) - 6
     sq_disp = STATE.search_query[-box_w:] if len(STATE.search_query) > box_w else STATE.search_query
@@ -1860,11 +1859,11 @@ def draw_search(win) -> None:
     # ── Hint bar ──────────────────────────────────────────────────────────────
     hline(win, h - 2, 1, w - 2, cp(C_BORDER))
     if STATE.search_editing:
-        hints = "type to filter   Backspace erase   Enter confirm   Esc stop editing"
+        hints = "type to filter   Backspace erase   Enter/Esc confirm & browse"
     elif not STATE.cube_list_loaded:
-        hints = "Enter  edit search box   r  load table list   q quit"
+        hints = "Esc  edit search box   r  load table list   q quit"
     else:
-        hints = "Enter edit box   ↑↓ navigate results   Tab/Enter select → query   r reload   q quit"
+        hints = "Esc edit box   ↑↓ navigate results   Enter select → query   r reload   q quit"
     safe_addstr(win, h - 2, 3, hints, cp(C_MUTED))
 
 
@@ -1891,21 +1890,19 @@ def handle_search(ch: int) -> None:
     """Handle keypresses on the search screen.
 
     Two modes:
-      Browse mode  — digits 1-6 navigate screens; r reloads list; Enter enters
-                     editing mode (or selects if cursor is on a result);
-                     Up/Down/Tab move the result cursor.
+      Browse mode  — digits 1-6 navigate screens; r reloads list;
+                     Enter selects highlighted result; Up/Down move cursor.
+                     ESC (via handle_input) toggles into editing mode.
       Editing mode — all printable chars type into the search box (including
-                     1-6 and r); Enter confirms and exits editing; Esc exits
-                     editing without clearing the query.
+                     1-6 and r); Enter or ESC exit back to browse mode.
     """
     results = _search_filtered()
     n = len(results)
 
     if STATE.search_editing:
         # ── Editing mode: capture all printable input ─────────────────────────
-        if ch == 27:                              # Esc — stop editing
-            STATE.search_editing = False
-        elif ch in (curses.KEY_ENTER, 10, 13):   # Enter — confirm, exit editing
+        # (ESC is handled by handle_input and toggles back to browse mode)
+        if ch in (curses.KEY_ENTER, 10, 13):     # Enter — confirm, exit editing
             STATE.search_editing = False
         elif ch in (curses.KEY_BACKSPACE, 127, 8):
             STATE.search_query  = STATE.search_query[:-1]
@@ -1937,8 +1934,6 @@ def handle_search(ch: int) -> None:
         STATE.search_cursor = max(0, STATE.search_cursor - 10)
     elif ch == curses.KEY_NPAGE:
         STATE.search_cursor = min(n - 1, STATE.search_cursor + 10) if n else 0
-    elif ch in (ord("e"), ord("E")):              # e — enter editing mode
-        STATE.search_editing = True
     elif ch in (ord("r"), ord("R")):
         if not STATE.cube_list_loading:
             _bg(do_fetch_cube_list)
@@ -1951,21 +1946,21 @@ def handle_input(ch: int) -> bool:
     Returns False to quit the application.
 
     Navigation: digit keys 1-6 (active outside text-edit modes)
-      1 → help    2 → query    3 → results    4 → dsd    5 → cache    6 → search
+      1 → help    2 → search    3 → dsd    4 → query    5 → results    6 → cache
     """
-    # ── Digit navigation (1-5) — active outside text-edit modes ─────────────────
+    # ── Digit navigation (1-6) — active outside text-edit modes ─────────────────
     in_text_mode = (STATE.editing
                     or STATE.filter_mode
                     or STATE.dsd_filter_mode
                     or STATE.search_editing)
     if not in_text_mode:
-        nav = {ord("1"): "help", ord("2"): "query", ord("3"): "results",
-               ord("4"): "dsd",  ord("5"): "cache", ord("6"): "search"}
+        nav = {ord("1"): "help", ord("2"): "search", ord("3"): "dsd",
+               ord("4"): "query", ord("5"): "results", ord("6"): "cache"}
         if ch in nav:
             dest = nav[ch]
             if dest == "dsd" and STATE.dsd is None:
                 STATE.status_msg = (
-                    "No DSD loaded — go to query form (2) and press d"
+                    "No DSD loaded — go to query form (4) and press d"
                 )
             else:
                 # When leaving DSD browser to query form, sync key from selections
@@ -1974,7 +1969,7 @@ def handle_input(ch: int) -> bool:
                 STATE.mode = dest
             return True
 
-    # Bare ESC → cancel editing if active, otherwise ignored
+    # Bare ESC — context-sensitive
     if ch == 27:
         if STATE.editing:
             STATE.editing = False
@@ -1985,8 +1980,9 @@ def handle_input(ch: int) -> bool:
         elif STATE.dsd_filter_mode:
             STATE.dsd_filter      = ""
             STATE.dsd_filter_mode = False
-        elif STATE.search_editing:
-            STATE.search_editing = False
+        elif STATE.mode == "search":
+            # Toggle: enter editing when browsing, exit editing when already editing
+            STATE.search_editing = not STATE.search_editing
         return True
 
     # ── Global quit ───────────────────────────────────────────────────────────
@@ -2053,8 +2049,8 @@ def run() -> None:
     print(f"Cache directory: {CACHE_DIR}")
     print()
     print("Navigation — press a number key from anywhere:")
-    print("  1  Help    2  Query    3  Results    4  DSD")
-    print("  5  Cache   6  Search   q  Quit")
+    print("  1  Help    2  Search   3  DSD    4  Query")
+    print("  5  Results  6  Cache   q  Quit")
     print()
     print("Press Ctrl+C to force-exit.\n")
     try:
