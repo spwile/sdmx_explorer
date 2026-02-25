@@ -20,10 +20,9 @@ cleanly in any terminal, browser dev-tools, or IDE console.
 
 Key map summary
 ---------------
-  1  Help    2  Query form    3  Results table
-  4  DSD browser    5  Cache manager    q  Quit
+  1  Help    2  Query    3  Results    4  DSD    5  Cache    6  Search
 
-Number keys 1-5 navigate between screens from anywhere.
+Number keys 1-6 navigate between screens from anywhere.
 
 Dependencies: Python 3.8+ stdlib only (curses, urllib, xml, json,
               hashlib, csv, pathlib, datetime, threading)
@@ -51,6 +50,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # Configuration
 # ──────────────────────────────────────────────────────────────────────────────
 BASE_URL         = "https://www150.statcan.gc.ca/t1/wds/sdmx/statcan/rest"
+WDS_BASE_URL     = "https://www150.statcan.gc.ca/t1/wds/rest"
 CACHE_DIR        = pathlib.Path.home() / ".cache" / "sdmx_explorer"
 CACHE_TTL_DATA   = 3_600     # 1 h  – data endpoints
 CACHE_TTL_STRUCT = 86_400    # 24 h – structure / DSD endpoints
@@ -198,7 +198,7 @@ class SDMXClient:
             params["startPeriod"] = start_period
         if end_period:
             params["endPeriod"] = end_period
-        if last_n > 0:
+        if last_n  > 0:
             params["lastNObservations"] = str(last_n)
         if first_n > 0:
             params["firstNObservations"] = str(first_n)
@@ -227,6 +227,12 @@ class SDMXClient:
     def fetch_structure(cls, dataflow_id: str) -> str:
         url = f"{BASE_URL}/structure/Data_Structure_{dataflow_id}"
         return cls._fetch(url, cls.STR_ACCEPT, CACHE_TTL_STRUCT)
+
+    @classmethod
+    def fetch_cube_list(cls) -> str:
+        """Fetch getAllCubesListLite — returns raw JSON string."""
+        url = f"{WDS_BASE_URL}/getAllCubesListLite"
+        return cls._fetch(url, "application/json", CACHE_TTL_STRUCT)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -428,7 +434,7 @@ class AppState:
         self.error:          str                 = ""
         self.loading:        bool                = False
         self.status_msg:     str                 = (
-            "Ready — 1 help  2 query  3 results  4 DSD  5 cache  |  q quit"
+            "Ready — 1 help  2 query  3 results  4 DSD  5 cache  6 search  |  q quit"
         )
 
         self.table_offset: int  = 0
@@ -453,6 +459,14 @@ class AppState:
         # Per-dimension selections: {dim_id: set of selected code IDs}
         # Empty set means "All" (wildcard). Populated when DSD is loaded.
         self.dsd_selections: Dict[str, set] = {}
+
+        # ── Table search ─────────────────────────────────────────────────
+        self.cube_list: List[Dict] = []        # full list from getAllCubesListLite
+        self.cube_list_loaded: bool = False
+        self.cube_list_loading: bool = False
+        self.search_query: str = ""
+        self.search_cursor: int = 0
+        self.search_offset: int = 0
 
 
 STATE = AppState()
@@ -572,6 +586,7 @@ _NAV_ITEMS = [
     ("3 Results", "results"),
     ("4 DSD",     "dsd"),
     ("5 Cache",   "cache"),
+    ("6 Search",  "search"),
 ]
 
 
@@ -1226,6 +1241,7 @@ GLOBAL NAVIGATION  (number keys — active outside text-edit / filter mode)
   3              Results table
   4              DSD browser  (after fetching a DSD)
   5              Cache manager
+  6              Table search
   q              Quit
 
 QUERY FORM
@@ -1276,6 +1292,15 @@ DSD BROWSER  (after fetching the DSD on the query form)
 CACHE MANAGER
   c              Clear all cached HTTP responses
 
+TABLE SEARCH
+  Type           Filter tables by name or product ID (live search)
+  ↑ / ↓          Navigate results  (also j / k)
+  PgUp / PgDn    Jump 10 rows
+  Enter          Select table → populates query form, switches to it
+  Backspace      Erase last character
+  r              (Re)load the full table list  (cached 24 h)
+  Note: list auto-loads on first keystroke
+
 ──────────────────────────────────────────────────────────────
 
 SDMX KEY SYNTAX  (Dimension key field)
@@ -1304,7 +1329,8 @@ def draw_help(win) -> None:
             attr = cp(C_LABEL, bold=True)
         elif line.startswith("  1") or line.startswith("  2") \
                 or line.startswith("  3") or line.startswith("  4") \
-                or line.startswith("  5") or line.startswith("  ↑") \
+                or line.startswith("  5") or line.startswith("  6") \
+                or line.startswith("  ↑") \
                 or line.startswith("  ←") or line.startswith("  →") \
                 or line.startswith("  /") or line.startswith("  s") \
                 or line.startswith("  S") or line.startswith("  e") \
@@ -1700,6 +1726,197 @@ def handle_dsd(ch: int) -> None:
                 )
 
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Table search
+# ──────────────────────────────────────────────────────────────────────────────
+WDS_FREQ_LABELS = {
+    1: "Annual", 2: "Semi-annual", 4: "Quarterly", 6: "Bi-monthly",
+    7: "Monthly every 4 wks", 9: "Every 2 months", 10: "Monthly",
+    11: "Semi-monthly", 12: "Bi-weekly", 13: "Weekly", 14: "Daily",
+    15: "Occasional", 16: "Infrequent",
+}
+
+
+def _search_filtered() -> List[Dict]:
+    """Return cube list entries matching the current search query (case-insensitive)."""
+    items = STATE.cube_list
+    q = STATE.search_query.strip().lower()
+    if not q:
+        return items
+    parts = q.split()
+    out = []
+    for item in items:
+        haystack = (
+            str(item.get("productId", "")) + " " +
+            item.get("cubeTitleEn", "").lower()
+        )
+        if all(p in haystack for p in parts):
+            out.append(item)
+    return out
+
+
+def do_fetch_cube_list() -> None:
+    STATE.cube_list_loading = True
+    STATE.status_msg        = "Fetching table list from StatCan WDS …"
+    try:
+        raw             = SDMXClient.fetch_cube_list()
+        data            = json.loads(raw)
+        STATE.cube_list = data
+        STATE.cube_list_loaded   = True
+        STATE.status_msg = (
+            f"Table list loaded: {len(data):,} tables — type to search"
+        )
+    except Exception as e:
+        STATE.status_msg = f"Table list fetch error: {e}"
+    finally:
+        STATE.cube_list_loading = False
+
+
+def draw_search(win) -> None:
+    h, w = win.getmaxyx()
+    win.erase()
+    draw_chrome(win)
+    draw_box(win, 1, 1, h - 2, w - 2, "Table Search", cp(C_BORDER))
+
+    # ── Search box ────────────────────────────────────────────────────────────
+    sq_label = "Search: "
+    safe_addstr(win, 3, 4, sq_label, cp(C_LABEL, bold=True))
+    box_w = w - 4 - len(sq_label) - 6
+    sq_disp = STATE.search_query[-box_w:] if len(STATE.search_query) > box_w else STATE.search_query
+    safe_addstr(win, 3, 4 + len(sq_label),
+                f"[ {sq_disp:<{box_w}} ]", cp(C_SELECTED))
+
+    # Status / loader line
+    results = _search_filtered()
+    n_total = len(STATE.cube_list)
+
+    if STATE.cube_list_loading:
+        safe_addstr(win, 4, 4, "⏳  Downloading table list …", cp(C_WARN, bold=True))
+    elif not STATE.cube_list_loaded:
+        safe_addstr(win, 4, 4,
+                    "Press r to load table list  (one-time download, cached 24 h)",
+                    cp(C_MUTED))
+    else:
+        count_str = (f"{len(results):,} of {n_total:,} tables"
+                     if STATE.search_query.strip() else
+                     f"{n_total:,} tables  — type to filter")
+        safe_addstr(win, 4, 4, count_str, cp(C_DIM2))
+
+    # ── Column header ─────────────────────────────────────────────────────────
+    hline(win, 5, 2, w - 4, cp(C_BORDER))
+    id_w   = 12
+    freq_w = 11
+    date_w = 12
+    title_w = max(10, w - id_w - freq_w - date_w - 8)
+    safe_addstr(win, 6, 4,
+                f"{'Product ID':<{id_w}} {'Title':<{title_w}} {'Freq':<{freq_w}} {'End date':<{date_w}}",
+                cp(C_HEADER, bold=True))
+    hline(win, 7, 2, w - 4, cp(C_BORDER))
+
+    # ── Results list ──────────────────────────────────────────────────────────
+    list_top    = 8
+    list_height = h - list_top - 3
+    n_results   = len(results)
+
+    if n_results:
+        STATE.search_cursor = max(0, min(STATE.search_cursor, n_results - 1))
+        if STATE.search_cursor < STATE.search_offset:
+            STATE.search_offset = STATE.search_cursor
+        elif STATE.search_cursor >= STATE.search_offset + list_height:
+            STATE.search_offset = STATE.search_cursor - list_height + 1
+
+    for i in range(list_height):
+        ri = i + STATE.search_offset
+        if ri >= n_results:
+            break
+        item      = results[ri]
+        pid       = str(item.get("productId", ""))
+        title     = item.get("cubeTitleEn", "")
+        freq_code = item.get("frequencyCode", 0)
+        freq      = WDS_FREQ_LABELS.get(freq_code, str(freq_code))
+        end_date  = str(item.get("cubeEndDate", ""))[:10]
+        archived  = str(item.get("archived", "0")) != "0"
+        is_cursor = (ri == STATE.search_cursor)
+
+        if is_cursor:
+            row_attr  = cp(C_SELECTED)
+            id_attr   = cp(C_SELECTED)
+            date_attr = cp(C_SELECTED)
+        elif archived:
+            row_attr  = cp(C_MUTED)
+            id_attr   = cp(C_MUTED)
+            date_attr = cp(C_MUTED)
+        else:
+            row_attr  = cp(C_NORMAL)
+            id_attr   = cp(C_ACCENT)
+            date_attr = cp(C_TIME)
+
+        title_trunc = title[:title_w]
+        freq_trunc  = freq[:freq_w]
+        line = f"{pid:<{id_w}} {title_trunc:<{title_w}} {freq_trunc:<{freq_w}} {end_date:<{date_w}}"
+        safe_addstr(win, list_top + i, 4, line[:w - 6].ljust(w - 6), row_attr)
+        if not is_cursor:
+            safe_addstr(win, list_top + i, 4, f"{pid:<{id_w}}", id_attr)
+            safe_addstr(win, list_top + i, 4 + id_w + 1 + title_w + 1 + freq_w + 1,
+                        f"{end_date:<{date_w}}", date_attr)
+
+    draw_scrollbar(win, list_top, list_height, w - 3, n_results, STATE.search_offset)
+
+    # ── Hint bar ──────────────────────────────────────────────────────────────
+    hline(win, h - 2, 1, w - 2, cp(C_BORDER))
+    if not STATE.cube_list_loaded:
+        hints = "r  load table list   q quit"
+    else:
+        hints = "type to filter   ↑↓ navigate   Enter select → query form   Backspace erase   r reload"
+    safe_addstr(win, h - 2, 3, hints, cp(C_MUTED))
+
+
+def handle_search(ch: int) -> None:
+    """Handle keypresses on the search screen."""
+    results = _search_filtered()
+    n = len(results)
+
+    if ch in (ord("r"), ord("R")):
+        if not STATE.cube_list_loading:
+            # Force a fresh fetch by clearing the cache entry, then reload
+            _bg(do_fetch_cube_list)
+        return
+
+    if ch in (curses.KEY_UP, ord("k")):
+        STATE.search_cursor = max(0, STATE.search_cursor - 1)
+    elif ch in (curses.KEY_DOWN, ord("j")):
+        STATE.search_cursor = min(n - 1, STATE.search_cursor + 1) if n else 0
+    elif ch == curses.KEY_PPAGE:
+        STATE.search_cursor = max(0, STATE.search_cursor - 10)
+    elif ch == curses.KEY_NPAGE:
+        STATE.search_cursor = min(n - 1, STATE.search_cursor + 10) if n else 0
+    elif ch in (curses.KEY_ENTER, 10, 13):
+        if results and 0 <= STATE.search_cursor < n:
+            item = results[STATE.search_cursor]
+            pid  = str(item.get("productId", ""))
+            # Populate query form and switch to it
+            STATE.dataflow_id  = pid
+            STATE.query_type   = "cube"
+            STATE.dim_key      = ""
+            STATE.dsd          = None
+            STATE.dsd_selections = {}
+            STATE.status_msg   = (
+                f"Selected table {pid}: {item.get('cubeTitleEn', '')[:60]}"
+            )
+            STATE.mode = "query"
+    elif ch in (curses.KEY_BACKSPACE, 127, 8):
+        STATE.search_query  = STATE.search_query[:-1]
+        STATE.search_cursor = 0
+        STATE.search_offset = 0
+    elif 32 <= ch < 127:
+        # Auto-load list on first keystroke if not yet loaded
+        if not STATE.cube_list_loaded and not STATE.cube_list_loading:
+            _bg(do_fetch_cube_list)
+        STATE.search_query  += chr(ch)
+        STATE.search_cursor  = 0
+        STATE.search_offset  = 0
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Master input dispatcher
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1707,8 +1924,8 @@ def handle_input(ch: int) -> bool:
     """
     Returns False to quit the application.
 
-    Navigation: digit keys 1-5 (active outside text-edit modes)
-      1 → help    2 → query    3 → results    4 → dsd    5 → cache
+    Navigation: digit keys 1-6 (active outside text-edit modes)
+      1 → help    2 → query    3 → results    4 → dsd    5 → cache    6 → search
     """
     # ── Digit navigation (1-5) — active outside text-edit modes ─────────────────
     in_text_mode = (STATE.editing
@@ -1716,7 +1933,7 @@ def handle_input(ch: int) -> bool:
                     or STATE.dsd_filter_mode)
     if not in_text_mode:
         nav = {ord("1"): "help", ord("2"): "query", ord("3"): "results",
-               ord("4"): "dsd",  ord("5"): "cache"}
+               ord("4"): "dsd",  ord("5"): "cache", ord("6"): "search"}
         if ch in nav:
             dest = nav[ch]
             if dest == "dsd" and STATE.dsd is None:
@@ -1744,7 +1961,8 @@ def handle_input(ch: int) -> bool:
         return True
 
     # ── Global quit ───────────────────────────────────────────────────────────
-    if ch in (ord("q"), ord("Q")) and not in_text_mode and STATE.mode != "help":
+    if ch in (ord("q"), ord("Q")) and not in_text_mode \
+            and STATE.mode not in ("help", "search"):
         return False
 
     # ── Mode dispatch ─────────────────────────────────────────────────────────
@@ -1765,6 +1983,8 @@ def handle_input(ch: int) -> bool:
         if ch in (ord("c"), ord("C")):
             n = Cache.clear()
             STATE.status_msg = f"Cache cleared — {n} entries removed"
+    elif mode == "search":
+        handle_search(ch)
 
     return True
 
@@ -1784,6 +2004,7 @@ def main(stdscr) -> None:
         "dsd":     draw_dsd,
         "help":    draw_help,
         "cache":   draw_cache,
+        "search":  draw_search,
     }
 
     while True:
@@ -1803,8 +2024,8 @@ def run() -> None:
     print(f"Cache directory: {CACHE_DIR}")
     print()
     print("Navigation — press a number key from anywhere:")
-    print("  1  Help    2  Query form    3  Results")
-    print("  4  DSD     5  Cache         q  Quit")
+    print("  1  Help    2  Query    3  Results    4  DSD")
+    print("  5  Cache   6  Search   q  Quit")
     print()
     print("Press Ctrl+C to force-exit.\n")
     try:
