@@ -196,16 +196,16 @@ class SDMXClient:
                    start_period: str = "", end_period: str = "",
                    last_n: int = 0, first_n: int = 0) -> str:
         params: Dict[str, str] = {}
-        if start_period:
-            params["startPeriod"] = start_period
-        if end_period:
-            params["endPeriod"] = end_period
-        if last_n > 0:
-            params["lastNObservations"] = str(last_n)
-        if first_n > 0:
+        if start_period: 
+            params["startPeriod"]        = start_period
+        if end_period:   
+            params["endPeriod"]          = end_period
+        if last_n  > 0:  
+            params["lastNObservations"]  = str(last_n)
+        if first_n > 0:  
             params["firstNObservations"] = str(first_n)
         url = f"{BASE_URL}/data/DF_{dataflow_id}/{key}"
-        if params:
+        if params: 
             url += "?" + urllib.parse.urlencode(params)
         return cls._fetch(url, cls.SS_ACCEPT, CACHE_TTL_DATA)
 
@@ -214,14 +214,14 @@ class SDMXClient:
                      end_period: str = "", last_n: int = 0) -> str:
         vid = vector_id.lstrip("vV")
         params: Dict[str, str] = {}
-        if start_period:
-            params["startPeriod"] = start_period
-        if end_period:
-            params["endPeriod"] = end_period
-        if last_n > 0:
+        if start_period: 
+            params["startPeriod"]       = start_period
+        if end_period:   
+            params["endPeriod"]         = end_period
+        if last_n > 0:  
             params["lastNObservations"] = str(last_n)
         url = f"{BASE_URL}/vector/v{vid}"
-        if params:
+        if params: 
             url += "?" + urllib.parse.urlencode(params)
         return cls._fetch(url, cls.SS_ACCEPT, CACHE_TTL_DATA)
 
@@ -292,11 +292,11 @@ def parse_dsd(xml_text: str) -> DSDResult:
     Parse a full DSD XML response.
 
     Returns a dict with keys:
-      dataflow_id  - string
-      dimensions   - list of DSDDimension (sorted by position)
-      attributes   - list of DSDDimension (attributes)
-      codelists    - {codelist_id: {code_id: label}}
-      flat         - {dim_or_attr_id: {code_id: label}}  (quick lookup)
+      dataflow_id  – string
+      dimensions   – list of DSDDimension (sorted by position)
+      attributes   – list of DSDDimension (attributes)
+      codelists    – {codelist_id: {code_id: label}}
+      flat         – {dim_or_attr_id: {code_id: label}}  (quick lookup)
     """
     root = ET.fromstring(xml_text)
 
@@ -327,7 +327,7 @@ def parse_dsd(xml_text: str) -> DSDResult:
             for er in lr.iter(f"{{{NS_STRUCT}}}Enumeration"):
                 for ref in er:
                     v = ref.get("id", "")
-                    if v:
+                    if v: 
                         return v
         return ""
 
@@ -1733,10 +1733,23 @@ def handle_dsd(ch: int) -> None:
 # Table search
 # ──────────────────────────────────────────────────────────────────────────────
 WDS_FREQ_LABELS = {
-    1: "Annual", 2: "Semi-annual", 4: "Quarterly", 6: "Bi-monthly",
-    7: "Monthly every 4 wks", 9: "Every 2 months", 10: "Monthly",
-    11: "Semi-monthly", 12: "Bi-weekly", 13: "Weekly", 14: "Daily",
-    15: "Occasional", 16: "Infrequent",
+     1: "Daily",
+     2: "Weekly",
+     4: "Biweekly",
+     6: "Monthly",
+     7: "Bimonthly",
+     9: "Quarterly",
+    11: "Semi-annual",
+    12: "Annual",
+    13: "Every 2 years",
+    14: "Every 3 years",
+    15: "Every 4 years",
+    16: "Every 5 years",
+    17: "Every 10 years",
+    18: "Occasional",
+    19: "Occasional Quarterly",
+    20: "Occasional Monthly",
+    21: "Occasional Daily",
 }
 
 
