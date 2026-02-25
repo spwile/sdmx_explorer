@@ -199,7 +199,7 @@ class SDMXClient:
         if end_period:
             params["endPeriod"] = end_period
         if last_n  > 0:
-            params["lastNObservations"] = str(last_n)
+            params["lastNObservations"]= str(last_n)
         if first_n > 0:
             params["firstNObservations"] = str(first_n)
         url = f"{BASE_URL}/data/DF_{dataflow_id}/{key}"
@@ -389,14 +389,14 @@ SPARK_CHARS = " ▁▂▃▄▅▆▇█"
 
 
 def sparkline(values: List[Optional[float]], width: int = 40) -> str:
-    nums = [v for v in values if v is not None]
+    nums = [v for v in values if v is not None and v == v]  # exclude None and NaN
     if not nums:
         return "─" * width
     lo, hi = min(nums), max(nums)
     rng = hi - lo or 1
     out = []
     for v in values[-width:]:
-        if v is None:
+        if v is None or v != v:   # None or NaN → gap marker
             out.append("?")
         else:
             idx = int((v - lo) / rng * (len(SPARK_CHARS) - 1))
@@ -467,6 +467,7 @@ class AppState:
         self.search_query: str = ""
         self.search_cursor: int = 0
         self.search_offset: int = 0
+        self.search_editing: bool = False  # True = typing into search box
 
 
 STATE = AppState()
@@ -749,8 +750,6 @@ def apply_filter() -> None:
 def _col_w(col: str) -> int:
     if col in COL_WIDTHS:
         return COL_WIDTHS[col]
-    if col.endswith("_LABEL"):
-        return 24
     return max(DIM_COL_W, len(col) + 2)
 
 
@@ -840,8 +839,6 @@ def draw_results(win) -> None:
                 attr = cp(C_NUM)
             elif col == "TIME_PERIOD":
                 attr = cp(C_TIME)
-            elif col.endswith("_LABEL"):
-                attr = cp(C_MUTED)
             else:
                 attr = cp(C_DIM_VAL) if ci % 2 == 0 else cp(C_DIM2)
             cell = (str(val) if val is not None else "·")[:cw].ljust(cw)
@@ -871,7 +868,7 @@ def draw_series_detail(win) -> None:
 
     row      = frame.rows[STATE.cursor_row]
     dim_cols = [c for c in frame.columns
-                if c not in ("TIME_PERIOD", "OBS_VALUE") and not c.endswith("_LABEL")]
+                if c not in ("TIME_PERIOD", "OBS_VALUE")]
 
     key_vals = tuple(row[frame.columns.index(c)] for c in dim_cols)
     s_rows   = [r for r in frame.rows
@@ -1293,13 +1290,18 @@ CACHE MANAGER
   c              Clear all cached HTTP responses
 
 TABLE SEARCH
-  Type           Filter tables by name or product ID (live search)
-  ↑ / ↓          Navigate results  (also j / k)
-  PgUp / PgDn    Jump 10 rows
-  Enter          Select table → populates query form, switches to it
-  Backspace      Erase last character
-  r              (Re)load the full table list  (cached 24 h)
-  Note: list auto-loads on first keystroke
+  Browse mode (default)
+    Enter          Enter editing mode (or select highlighted result)
+    e              Enter editing mode
+    ↑ / ↓          Navigate results  (also j / k)
+    PgUp / PgDn    Jump 10 rows
+    Tab            Select highlighted result → query form
+    r              (Re)load the full table list  (cached 24 h)
+  Editing mode  (search box active — 1-6 and r type as text)
+    Type           Filter by table name or product ID
+    Backspace      Erase last character
+    Enter / Esc    Exit editing mode
+  Note: list auto-loads on first keystroke in editing mode
 
 ──────────────────────────────────────────────────────────────
 
@@ -1379,40 +1381,28 @@ def _resolve_key(key: str, dataflow_id: str) -> str:
 
 def _join_dsd_labels(frame: Frame, dsd: DSDResult) -> Frame:
     """
-    For every dimension column in frame that has a codelist in the DSD,
-    insert a new  <DIM>_LABEL  column immediately after it containing the
-    human-readable label for each code value.  Columns with no codelist
-    (or where all codes are unknown) are left unchanged.
+    For every dimension column that has a codelist in the DSD, replace the
+    raw code value with its human-readable label in-place.  The column name
+    is kept unchanged.  Columns with no codelist, or where no row resolves
+    to a non-empty label, are left as-is (raw codes shown).
     """
-    flat     = dsd.get("flat", {})
-    new_cols: List[str]       = []
-    new_rows: List[List[Any]] = [[] for _ in frame.rows]
-
-    for ci, col in enumerate(frame.columns):
-        new_cols.append(col)
-        for ri, row in enumerate(frame.rows):
-            new_rows[ri].append(row[ci] if ci < len(row) else "")
-
-        # Only add label columns for non-TIME, non-OBS dimension columns
-        if col in ("TIME_PERIOD", "OBS_VALUE"):
-            continue
-        codelist = flat.get(col)
-        if not codelist:
-            continue
-        # Check at least one row actually resolves to a non-empty label
-        has_label = any(
-            codelist.get(str(row[ci] if ci < len(row) else ""), "")
-            for row in frame.rows
-        )
-        if not has_label:
-            continue
-        label_col = f"{col}_LABEL"
-        new_cols.append(label_col)
-        for ri, row in enumerate(frame.rows):
-            code = str(row[ci] if ci < len(row) else "")
-            new_rows[ri].append(codelist.get(code, ""))
-
-    return Frame(new_cols, new_rows)
+    flat = dsd.get("flat", {})
+    # Build a new rows list; columns stay identical
+    new_rows: List[List[Any]] = []
+    for row in frame.rows:
+        new_row = list(row)
+        for ci, col in enumerate(frame.columns):
+            if col in ("TIME_PERIOD", "OBS_VALUE"):
+                continue
+            codelist = flat.get(col)
+            if not codelist:
+                continue
+            code  = str(new_row[ci] if ci < len(new_row) else "")
+            label = codelist.get(code, "")
+            if label:
+                new_row[ci] = label
+        new_rows.append(new_row)
+    return Frame(frame.columns, new_rows)
 
 
 def do_fetch_data() -> None:
@@ -1781,11 +1771,15 @@ def draw_search(win) -> None:
 
     # ── Search box ────────────────────────────────────────────────────────────
     sq_label = "Search: "
+    editing_hint = " (editing — Esc to stop)" if STATE.search_editing else " (Enter to edit)"
     safe_addstr(win, 3, 4, sq_label, cp(C_LABEL, bold=True))
     box_w = w - 4 - len(sq_label) - 6
     sq_disp = STATE.search_query[-box_w:] if len(STATE.search_query) > box_w else STATE.search_query
+    box_attr = cp(C_ACCENT, bold=True) if STATE.search_editing else cp(C_NORMAL)
     safe_addstr(win, 3, 4 + len(sq_label),
-                f"[ {sq_disp:<{box_w}} ]", cp(C_SELECTED))
+                f"[ {sq_disp:<{box_w}} ]", box_attr)
+    safe_addstr(win, 3, 4 + len(sq_label) + box_w + 4,
+                editing_hint, cp(C_ACCENT) if STATE.search_editing else cp(C_MUTED))
 
     # Status / loader line
     results = _search_filtered()
@@ -1865,25 +1859,77 @@ def draw_search(win) -> None:
 
     # ── Hint bar ──────────────────────────────────────────────────────────────
     hline(win, h - 2, 1, w - 2, cp(C_BORDER))
-    if not STATE.cube_list_loaded:
-        hints = "r  load table list   q quit"
+    if STATE.search_editing:
+        hints = "type to filter   Backspace erase   Enter confirm   Esc stop editing"
+    elif not STATE.cube_list_loaded:
+        hints = "Enter  edit search box   r  load table list   q quit"
     else:
-        hints = "type to filter   ↑↓ navigate   Enter select → query form   Backspace erase   r reload"
+        hints = "Enter edit box   ↑↓ navigate results   Tab/Enter select → query   r reload   q quit"
     safe_addstr(win, h - 2, 3, hints, cp(C_MUTED))
 
 
+def _search_select_current() -> None:
+    """Select the highlighted search result and switch to the query form."""
+    results = _search_filtered()
+    n = len(results)
+    if results and 0 <= STATE.search_cursor < n:
+        item = results[STATE.search_cursor]
+        pid  = str(item.get("productId", ""))
+        STATE.dataflow_id    = pid
+        STATE.query_type     = "cube"
+        STATE.dim_key        = ""
+        STATE.dsd            = None
+        STATE.dsd_selections = {}
+        STATE.search_editing = False
+        STATE.status_msg     = (
+            f"Selected table {pid}: {item.get('cubeTitleEn', '')[:60]}"
+        )
+        STATE.mode = "query"
+
+
 def handle_search(ch: int) -> None:
-    """Handle keypresses on the search screen."""
+    """Handle keypresses on the search screen.
+
+    Two modes:
+      Browse mode  — digits 1-6 navigate screens; r reloads list; Enter enters
+                     editing mode (or selects if cursor is on a result);
+                     Up/Down/Tab move the result cursor.
+      Editing mode — all printable chars type into the search box (including
+                     1-6 and r); Enter confirms and exits editing; Esc exits
+                     editing without clearing the query.
+    """
     results = _search_filtered()
     n = len(results)
 
-    if ch in (ord("r"), ord("R")):
-        if not STATE.cube_list_loading:
-            # Force a fresh fetch by clearing the cache entry, then reload
-            _bg(do_fetch_cube_list)
+    if STATE.search_editing:
+        # ── Editing mode: capture all printable input ─────────────────────────
+        if ch == 27:                              # Esc — stop editing
+            STATE.search_editing = False
+        elif ch in (curses.KEY_ENTER, 10, 13):   # Enter — confirm, exit editing
+            STATE.search_editing = False
+        elif ch in (curses.KEY_BACKSPACE, 127, 8):
+            STATE.search_query  = STATE.search_query[:-1]
+            STATE.search_cursor = 0
+            STATE.search_offset = 0
+        elif 32 <= ch < 127:
+            if not STATE.cube_list_loaded and not STATE.cube_list_loading:
+                _bg(do_fetch_cube_list)
+            STATE.search_query  += chr(ch)
+            STATE.search_cursor  = 0
+            STATE.search_offset  = 0
         return
 
-    if ch in (curses.KEY_UP, ord("k")):
+    # ── Browse mode: navigation and commands ─────────────────────────────────
+    if ch in (curses.KEY_ENTER, 10, 13):
+        if results and 0 <= STATE.search_cursor < n:
+            # Cursor is on a result — select it
+            _search_select_current()
+        else:
+            # No result highlighted — enter editing mode
+            STATE.search_editing = True
+    elif ch == ord("	"):                         # Tab — also selects
+        _search_select_current()
+    elif ch in (curses.KEY_UP, ord("k")):
         STATE.search_cursor = max(0, STATE.search_cursor - 1)
     elif ch in (curses.KEY_DOWN, ord("j")):
         STATE.search_cursor = min(n - 1, STATE.search_cursor + 1) if n else 0
@@ -1891,31 +1937,11 @@ def handle_search(ch: int) -> None:
         STATE.search_cursor = max(0, STATE.search_cursor - 10)
     elif ch == curses.KEY_NPAGE:
         STATE.search_cursor = min(n - 1, STATE.search_cursor + 10) if n else 0
-    elif ch in (curses.KEY_ENTER, 10, 13):
-        if results and 0 <= STATE.search_cursor < n:
-            item = results[STATE.search_cursor]
-            pid  = str(item.get("productId", ""))
-            # Populate query form and switch to it
-            STATE.dataflow_id  = pid
-            STATE.query_type   = "cube"
-            STATE.dim_key      = ""
-            STATE.dsd          = None
-            STATE.dsd_selections = {}
-            STATE.status_msg   = (
-                f"Selected table {pid}: {item.get('cubeTitleEn', '')[:60]}"
-            )
-            STATE.mode = "query"
-    elif ch in (curses.KEY_BACKSPACE, 127, 8):
-        STATE.search_query  = STATE.search_query[:-1]
-        STATE.search_cursor = 0
-        STATE.search_offset = 0
-    elif 32 <= ch < 127:
-        # Auto-load list on first keystroke if not yet loaded
-        if not STATE.cube_list_loaded and not STATE.cube_list_loading:
+    elif ch in (ord("e"), ord("E")):              # e — enter editing mode
+        STATE.search_editing = True
+    elif ch in (ord("r"), ord("R")):
+        if not STATE.cube_list_loading:
             _bg(do_fetch_cube_list)
-        STATE.search_query  += chr(ch)
-        STATE.search_cursor  = 0
-        STATE.search_offset  = 0
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Master input dispatcher
@@ -1930,7 +1956,8 @@ def handle_input(ch: int) -> bool:
     # ── Digit navigation (1-5) — active outside text-edit modes ─────────────────
     in_text_mode = (STATE.editing
                     or STATE.filter_mode
-                    or STATE.dsd_filter_mode)
+                    or STATE.dsd_filter_mode
+                    or STATE.search_editing)
     if not in_text_mode:
         nav = {ord("1"): "help", ord("2"): "query", ord("3"): "results",
                ord("4"): "dsd",  ord("5"): "cache", ord("6"): "search"}
@@ -1958,6 +1985,8 @@ def handle_input(ch: int) -> bool:
         elif STATE.dsd_filter_mode:
             STATE.dsd_filter      = ""
             STATE.dsd_filter_mode = False
+        elif STATE.search_editing:
+            STATE.search_editing = False
         return True
 
     # ── Global quit ───────────────────────────────────────────────────────────
