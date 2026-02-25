@@ -91,7 +91,9 @@ class Frame:
 
     def describe(self, col: str) -> Dict[str, float]:
         vals = [r[self.columns.index(col)] for r in self.rows]
-        nums = [float(v) for v in vals if v is not None]
+        nums = [float(v) for v in vals
+                if v is not None and str(v).lower() not in ("nan", "inf", "-inf")
+                and float(v) == float(v)]  # exclude None, NaN, ±Inf
         if not nums:
             return {}
         nums.sort()
@@ -198,7 +200,7 @@ class SDMXClient:
             params["startPeriod"] = start_period
         if end_period:
             params["endPeriod"] = end_period
-        if last_n  > 0:
+        if last_n > 0:
             params["lastNObservations"] = str(last_n)
         if first_n > 0:
             params["firstNObservations"] = str(first_n)
@@ -213,10 +215,10 @@ class SDMXClient:
         vid = vector_id.lstrip("vV")
         params: Dict[str, str] = {}
         if start_period:
-            params["startPeriod"]= start_period
+            params["startPeriod"] = start_period
         if end_period:
             params["endPeriod"] = end_period
-        if last_n > 0: 
+        if last_n > 0:
             params["lastNObservations"] = str(last_n)
         url = f"{BASE_URL}/vector/v{vid}"
         if params:
@@ -290,11 +292,11 @@ def parse_dsd(xml_text: str) -> DSDResult:
     Parse a full DSD XML response.
 
     Returns a dict with keys:
-      dataflow_id  – string
-      dimensions   – list of DSDDimension (sorted by position)
-      attributes   – list of DSDDimension (attributes)
-      codelists    – {codelist_id: {code_id: label}}
-      flat         – {dim_or_attr_id: {code_id: label}}  (quick lookup)
+      dataflow_id  - string
+      dimensions   - list of DSDDimension (sorted by position)
+      attributes   - list of DSDDimension (attributes)
+      codelists    - {codelist_id: {code_id: label}}
+      flat         - {dim_or_attr_id: {code_id: label}}  (quick lookup)
     """
     root = ET.fromstring(xml_text)
 
@@ -468,6 +470,8 @@ class AppState:
         self.search_cursor: int = 0
         self.search_offset: int = 0
         self.search_editing: bool = False  # True = typing into search box
+        self.search_sort_col: int  = -1    # -1 = unsorted
+        self.search_sort_desc: bool = False
 
 
 STATE = AppState()
@@ -849,7 +853,7 @@ def draw_results(win) -> None:
 
     hline(win, h - 2, 1, w - 2, cp(C_BORDER))
     safe_addstr(win, h - 2, 2,
-        "↑↓ navigate   Enter series detail   s sort   / filter   e export CSV",
+        "↑↓ navigate   Enter series detail   s/S sort col   R reverse   / filter   e export CSV",
         cp(C_MUTED))
 
 
@@ -964,7 +968,7 @@ def draw_series_detail(win) -> None:
 
     hline(win, h - 2, 1, w - 2, cp(C_BORDER))
     safe_addstr(win, h - 2, 2,
-                "Esc / Backspace  return to results table", cp(C_MUTED))
+                "Esc / Backspace  return to results", cp(C_MUTED))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1256,14 +1260,15 @@ RESULTS TABLE
   ↑ / ↓          Move cursor row
   PgUp / PgDn    Jump 10 rows
   Enter          Open series detail view
-  s              Cycle sort column forward
-  S              Cycle sort column backward
+  s              Cycle sort column forward (ascending)
+  S              Cycle sort column backward (ascending)
+  R              Reverse current sort direction
   /              Enter filter mode (type to filter all columns)
   Esc            Clear filter / exit filter mode
   e              Export visible rows to CSV
 
 SERIES DETAIL
-  Esc / Backspace  Return to results table
+  Esc / Backspace  Return to results
 
 DSD BROWSER  (after fetching the DSD on the query form)
   Dimension key is built automatically from your selections here.
@@ -1295,6 +1300,8 @@ TABLE SEARCH
     ↑ / ↓          Navigate results  (also j / k)
     PgUp / PgDn    Jump 10 rows
     Enter          Select highlighted result → query form
+    s / S          Sort by next / previous column
+    R              Reverse current sort direction
     r              (Re)load the full table list  (cached 24 h)
   Editing mode  (search box active — 1-6 and r type as text)
     Type           Filter by table name or product ID
@@ -1576,20 +1583,26 @@ def handle_results(ch: int) -> None:
     elif ch in (curses.KEY_ENTER, 10, 13):
         if frame and 0 <= STATE.cursor_row < len(frame):
             STATE.mode = "series"
-    elif ch in (ord("s"), ord("S")):
+    elif ch in (ord("s"), ord("S"), ord("R")):
         if frame:
-            nc    = len(frame.columns)
-            delta = -1 if ch == ord("S") else 1
-            nc_   = (STATE.sort_col + delta) % nc
-            if nc_ == STATE.sort_col:
-                STATE.sort_desc = not STATE.sort_desc
+            nc = len(frame.columns)
+            if ch == ord("R"):
+                # Reverse current sort direction
+                if STATE.sort_col >= 0:
+                    STATE.sort_desc = not STATE.sort_desc
             else:
-                STATE.sort_col  = nc_
-                STATE.sort_desc = False
-            STATE.frame = STATE.frame.sort(
-                frame.columns[STATE.sort_col], STATE.sort_desc)
-            apply_filter()
-            STATE.cursor_row = STATE.table_offset = 0
+                delta = -1 if ch == ord("S") else 1
+                nc_   = (STATE.sort_col + delta) % nc
+                if nc_ == STATE.sort_col:
+                    STATE.sort_desc = not STATE.sort_desc
+                else:
+                    STATE.sort_col  = nc_
+                    STATE.sort_desc = False
+            if STATE.sort_col >= 0:
+                STATE.frame = STATE.frame.sort(
+                    frame.columns[STATE.sort_col], STATE.sort_desc)
+                apply_filter()
+                STATE.cursor_row = STATE.table_offset = 0
     elif ch in (ord("e"), ord("E")):
         if frame:
             ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1745,6 +1758,24 @@ def _search_filtered() -> List[Dict]:
     return out
 
 
+_SEARCH_COLS = ["productId", "cubeTitleEn", "frequencyCode", "cubeEndDate"]
+_SEARCH_COL_LABELS = ["Product ID", "Title", "Freq", "End date"]
+
+
+def _search_sorted(items: List[Dict]) -> List[Dict]:
+    """Apply current search sort to a filtered list."""
+    col = STATE.search_sort_col
+    if col < 0 or col >= len(_SEARCH_COLS):
+        return items
+    key = _SEARCH_COLS[col]
+    def sort_key(item):
+        v = item.get(key, "")
+        if isinstance(v, (int, float)):
+            return (0, v, "")
+        return (1, 0, str(v).lower())
+    return sorted(items, key=sort_key, reverse=STATE.search_sort_desc)
+
+
 def do_fetch_cube_list() -> None:
     STATE.cube_list_loading = True
     STATE.status_msg        = "Fetching table list from StatCan WDS …"
@@ -1781,7 +1812,7 @@ def draw_search(win) -> None:
                 editing_hint, cp(C_ACCENT) if STATE.search_editing else cp(C_MUTED))
 
     # Status / loader line
-    results = _search_filtered()
+    results = _search_sorted(_search_filtered())
     n_total = len(STATE.cube_list)
 
     if STATE.cube_list_loading:
@@ -1802,9 +1833,16 @@ def draw_search(win) -> None:
     freq_w = 11
     date_w = 12
     title_w = max(10, w - id_w - freq_w - date_w - 8)
-    safe_addstr(win, 6, 4,
-                f"{'Product ID':<{id_w}} {'Title':<{title_w}} {'Freq':<{freq_w}} {'End date':<{date_w}}",
-                cp(C_HEADER, bold=True))
+    _scol_widths = [id_w, title_w, freq_w, date_w]
+    hdr_x = 4
+    for ci, (lbl, cw) in enumerate(zip(_SEARCH_COL_LABELS, _scol_widths)):
+        is_sort = (ci == STATE.search_sort_col)
+        indicator = ("▼" if STATE.search_sort_desc else "▲") if is_sort else ""
+        cell = f"{lbl}{indicator}"[:cw].ljust(cw)
+        safe_addstr(win, 6, hdr_x, cell,
+                    cp(C_HEADER, bold=True) if not is_sort
+                    else cp(C_ACCENT, bold=True))
+        hdr_x += cw + 1
     hline(win, 7, 2, w - 4, cp(C_BORDER))
 
     # ── Results list ──────────────────────────────────────────────────────────
@@ -1863,13 +1901,13 @@ def draw_search(win) -> None:
     elif not STATE.cube_list_loaded:
         hints = "Esc  edit search box   r  load table list   q quit"
     else:
-        hints = "Esc edit box   ↑↓ navigate results   Enter select → query   r reload   q quit"
+        hints = "Esc edit box   ↑↓ navigate   Enter select → query   s/S sort col   r reload   q quit"
     safe_addstr(win, h - 2, 3, hints, cp(C_MUTED))
 
 
 def _search_select_current() -> None:
     """Select the highlighted search result and switch to the query form."""
-    results = _search_filtered()
+    results = _search_sorted(_search_filtered())
     n = len(results)
     if results and 0 <= STATE.search_cursor < n:
         item = results[STATE.search_cursor]
@@ -1896,7 +1934,7 @@ def handle_search(ch: int) -> None:
       Editing mode — all printable chars type into the search box (including
                      1-6 and r); Enter or ESC exit back to browse mode.
     """
-    results = _search_filtered()
+    results = _search_sorted(_search_filtered())
     n = len(results)
 
     if STATE.search_editing:
@@ -1934,6 +1972,21 @@ def handle_search(ch: int) -> None:
         STATE.search_cursor = max(0, STATE.search_cursor - 10)
     elif ch == curses.KEY_NPAGE:
         STATE.search_cursor = min(n - 1, STATE.search_cursor + 10) if n else 0
+    elif ch in (ord("s"), ord("S"), ord("R")):
+        n_scols = len(_SEARCH_COLS)
+        if ch == ord("R"):
+            if STATE.search_sort_col >= 0:
+                STATE.search_sort_desc = not STATE.search_sort_desc
+        else:
+            delta   = -1 if ch == ord("S") else 1
+            new_col = (STATE.search_sort_col + delta) % n_scols
+            if new_col == STATE.search_sort_col:
+                STATE.search_sort_desc = not STATE.search_sort_desc
+            else:
+                STATE.search_sort_col  = new_col
+                STATE.search_sort_desc = False
+        STATE.search_cursor = 0
+        STATE.search_offset = 0
     elif ch in (ord("r"), ord("R")):
         if not STATE.cube_list_loading:
             _bg(do_fetch_cube_list)
@@ -1980,6 +2033,8 @@ def handle_input(ch: int) -> bool:
         elif STATE.dsd_filter_mode:
             STATE.dsd_filter      = ""
             STATE.dsd_filter_mode = False
+        elif STATE.mode == "series":
+            STATE.mode = "results"
         elif STATE.mode == "search":
             # Toggle: enter editing when browsing, exit editing when already editing
             STATE.search_editing = not STATE.search_editing
